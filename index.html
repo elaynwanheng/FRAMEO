@@ -118,8 +118,10 @@ take.onclick=async()=>{
     const ctx=c.getContext('2d');
 
     // IMPORTANT:
-    // Preview is mirrored like the native iPhone front-camera preview.
-    // The captured image is NOT mirrored, so it flips relative to the preview.
+    // Preview stays exactly as shown (not mirrored).
+    // The captured image is flipped horizontally once, as requested.
+    ctx.translate(sw,0);
+    ctx.scale(-1,1);
     ctx.drawImage(video,sx,sy,sw,sh,0,0,sw,sh);
 
     // Brighten the actual captured pixels (not just the preview).
