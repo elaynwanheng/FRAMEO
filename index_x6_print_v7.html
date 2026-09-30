@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#fff">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="frameo.">
+<link rel="manifest" href="./manifest.webmanifest">
+<title>frameo. PHOTO BOOTH</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#fff;color:#111;font-family:Arial,Helvetica,sans-serif}
+body{min-height:100dvh}
+.screen{width:100%;height:100dvh;display:flex;flex-direction:column;align-items:center;padding:clamp(18px,4vh,48px) 18px 24px}
+.logo{width:min(260px,58vw);height:auto;object-fit:contain;margin:0 auto clamp(20px,4vh,42px)}
+.camera-wrap{width:min(86vw,620px);aspect-ratio:3/4;position:relative;background:#111;overflow:hidden}
+video{display:block;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)!important}
+.countdown{position:absolute;inset:0;display:none;align-items:center;justify-content:center;color:#fff;font-size:min(22vw,150px);font-weight:700;background:rgba(0,0,0,.12);z-index:2}
+.take{margin-top:clamp(22px,4vh,42px);border:0;background:#111;color:#fff;border-radius:999px;padding:22px 58px;font-size:clamp(17px,2.8vw,28px);font-weight:700;letter-spacing:2px}
+.receipt-screen{justify-content:flex-start;overflow:auto}
+.receipt{width:min(86vw,620px);min-height:auto;max-width:none;background:#fff;padding:0;display:flex;flex-direction:column;align-items:center}
+.time{font-family:monospace;font-size:12px;margin-bottom:5mm;align-self:flex-start}
+.photo{width:min(86vw,620px);aspect-ratio:3/4;object-fit:cover;filter:none;display:block}
+.receipt-logo{width:58%;margin-top:6mm;object-fit:contain}
+.actions{display:flex;gap:12px;margin-top:18px;padding-bottom:24px}
+.actions button{border:0;border-radius:999px;padding:15px 25px;font-weight:700}
+.retake{background:#eee;color:#111}
+.print{background:#111;color:#fff}
+.hidden{display:none!important}
+.lock-dot{position:fixed;right:0;bottom:0;width:42px;height:42px;opacity:.01}
+.pin{position:fixed;inset:0;background:rgba(0,0,0,.75);display:none;align-items:center;justify-content:center;z-index:20}
+.pinbox{background:#fff;padding:24px;border-radius:18px;text-align:center}
+.pinbox input{font-size:22px;padding:10px;width:150px;text-align:center}
+.pinbox button{margin-top:12px;padding:10px 20px}
+@media print{
+  @page{size:80mm 105mm;margin:0}
+  html,body{width:80mm;height:105mm;overflow:hidden}
+  .receipt-screen{padding:0!important;display:block!important}
+  .receipt{width:80mm;min-height:105mm;max-width:none;padding:7mm 7mm 6mm}
+  .actions,.lock-dot{display:none!important}
+}
+</style>
+</head>
+<body>
+<div id="shoot" class="screen">
+  <img class="logo" src="./frameo-logo.png" alt="frameo. PHOTO BOOTH">
+  <div class="camera-wrap">
+    <video id="video" autoplay playsinline muted></video>
+    <div id="countdown" class="countdown"></div>
+  </div>
+  <button id="take" class="take hidden">TAKE PHOTO</button>
+<button id="connectPrinter" class="take hidden" style="margin-top:12px;font-size:15px;padding:14px 30px;">CONNECT X6</button>
+<div id="printerStatus" style="font:14px Arial,sans-serif;margin-top:8px;text-align:center;max-width:90%;"></div>
+</div>
+
+<div id="result" class="screen receipt-screen hidden">
+  <div class="receipt">
+    <div id="time" class="time"></div>
+    <img id="photo" class="photo" alt="Captured photo">
+    <img class="receipt-logo" src="./frameo-logo.png" alt="frameo. PHOTO BOOTH">
+  </div>
+  <div class="actions">
+    <button id="retake" class="retake">RETAKE</button>
+    <button id="print" class="print">PRINT</button>
+  </div>
+</div>
+
+<div id="pin" class="pin">
+  <div class="pinbox">
+    <div>Settings</div>
+    <input id="pinInput" type="password" inputmode="numeric" maxlength="4">
+    <br><button id="pinClose">CLOSE</button>
+  </div>
+</div>
+<div id="lockDot" class="lock-dot"></div>
+
+<script>
+const video=document.getElementById('video');
+const shoot=document.getElementById('shoot');
+const result=document.getElementById('result');
+const take=document.getElementById('take');
+const countdown=document.getElementById('countdown');
+const photo=document.getElementById('photo');
+const timeEl=document.getElementById('time');
+let streamPromise=null;
+async function startCamera(){
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    alert('Camera is not supported in this browser.');
+    return;
+  }
+  try{
+    streamPromise=navigator.mediaDevices.getUserMedia({
+      video:{facingMode:{ideal:'user'},width:{ideal:1920},height:{ideal:2560}},
+      audio:false
+    });
+    const s=await streamPromise;
+    video.srcObject=s;
+    await video.play();
+    take.classList.remove('hidden');
+    connectPrinter.classList.remove('hidden');
+  }catch(e){
+    console.error(e);
+    alert('Please allow camera access in Bluefy, then try again.');
+  }
+}
+window.addEventListener('load',()=>{
+  startCamera();
+});
+
+const connectPrinter=document.getElementById('connectPrinter');
+const printerStatus=document.getElementById('printerStatus');
+let x6Device=null;
+let x6WriteChar=null;
+let x6StatusChar=null;
+let x6FlowBlocked=false;
+
+function setPrinterStatus(msg){
+  printerStatus.textContent=msg;
+}
+
+connectPrinter.onclick=async()=>{
+  if(!navigator.bluetooth){
+    setPrinterStatus('Web Bluetooth is not available in this browser.');
+    return;
+  }
+  try{
+    setPrinterStatus('Searching for X6…');
+    x6Device=await navigator.bluetooth.requestDevice({
+      acceptAllDevices:true,
+      optionalServices:['ae30','ae3a']
+    });
+    setPrinterStatus('Selected: '+(x6Device.name || 'X6 printer')+' — connecting…');
+    const server=await x6Device.gatt.connect();
+
+    const ae30=await server.getPrimaryService('ae30');
+    x6WriteChar=await ae30.getCharacteristic('ae01');
+    x6StatusChar=await ae30.getCharacteristic('ae02');
+    x6FlowBlocked=false;
+    try{
+      await x6StatusChar.startNotifications();
+      x6StatusChar.addEventListener('characteristicvaluechanged', ev=>{
+        const v=ev.target.value;
+        // X6h flow-control notification: payload 0x10 = RX full, 0x00 = ready.
+        if(v && v.byteLength>=7){
+          const payload=v.getUint8(6);
+          if(payload===0x10) x6FlowBlocked=true;
+          else if(payload===0x00) x6FlowBlocked=false;
+        }
+      });
+    }catch(e){
+      console.warn('AE02 notifications unavailable',e);
+    }
+
+    const details=[];
+    for(const service of await server.getPrimaryServices()){
+      let chars=[];
+      try{ chars=await service.getCharacteristics(); }catch(e){}
+      const charText=chars.map(c=>c.uuid+' ['+[
+        c.properties.read?'read':'',
+        c.properties.write?'write':'',
+        c.properties.writeWithoutResponse?'writeNR':'',
+        c.properties.notify?'notify':'',
+        c.properties.indicate?'indicate':''
+      ].filter(Boolean).join(',')+']').join(' ; ');
+      details.push(service.uuid+(charText?' → '+charText:''));
+    }
+    setPrinterStatus('Connected: '+(x6Device.name || 'X6 printer')+' | '+details.join(' || '));
+    x6Device.addEventListener('gattserverdisconnected',()=>{
+      x6WriteChar=null;
+      x6StatusChar=null;
+      x6FlowBlocked=false;
+      setPrinterStatus('X6 disconnected.');
+    });
+  }catch(e){
+    console.error(e);
+    x6WriteChar=null;
+    if(e && e.name==='NotFoundError'){
+      setPrinterStatus('No printer selected.');
+    }else{
+      setPrinterStatus('X6 connection failed: '+(e.message || e));
+    }
+  }
+};
+
+function stamp(){
+  const d=new Date();
+  const p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function countdown3(){
+  return new Promise(resolve=>{
+    let n=3; countdown.textContent=n; countdown.style.display='flex';
+    const t=setInterval(()=>{
+      n--;
+      if(n===0){clearInterval(t);countdown.style.display='none';resolve();}
+      else countdown.textContent=n;
+    },1000);
+  });
+}
+
+take.onclick=async()=>{
+  take.disabled=true;
+  try{
+    if(!streamPromise){ await startCamera(); }
+    if(!video.srcObject){ throw new Error('Camera not started'); }
+    await countdown3();
+
+    const w=video.videoWidth,h=video.videoHeight;
+    const target=3/4;
+    let sw=w,sh=Math.round(w/target),sx=0,sy=0;
+    if(sh>h){sh=h;sw=Math.round(h*target);sx=Math.round((w-sw)/2);}
+    const c=document.createElement('canvas');
+    c.width=sw;c.height=sh;
+    const ctx=c.getContext('2d');
+
+    // IMPORTANT:
+    // Preview stays exactly as shown (not mirrored).
+    // The captured image is flipped horizontally once, as requested.
+    ctx.translate(sw,0);
+    ctx.scale(-1,1);
+    ctx.drawImage(video,sx,sy,sw,sh,0,0,sw,sh);
+
+    // Brighten the actual captured pixels (not just the preview).
+    // Gamma lift keeps shadow detail visible while preserving the requested B&W look.
+    const img = ctx.getImageData(0,0,sw,sh);
+    const d = img.data;
+    for(let i=0;i<d.length;i+=4){
+      const lum = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+      const contrast=1.28;
+      const g=Math.max(0,Math.min(255,Math.round((lum-128)*contrast+118)));
+      d[i]=d[i+1]=d[i+2]=g;
+    }
+    ctx.putImageData(img,0,0);
+
+    photo.src=c.toDataURL('image/jpeg',.94);
+    timeEl.textContent=stamp();
+    shoot.classList.add('hidden');
+    result.classList.remove('hidden');
+  }catch(e){
+    alert('Camera access is required.');
+  }finally{take.disabled=false;}
+};
+
+document.getElementById('retake').onclick=()=>{
+  result.classList.add('hidden');
+  shoot.classList.remove('hidden');
+};
+// X6h direct BLE printing.
+// The X6h accepts a proprietary 0x5178 packet stream on AE01.
+// Its documented print path uses 384-pixel rows, 4-bit grayscale pixels,
+// LZO1X compression, and 20-byte BLE writes.
+let lzoModulePromise=null;
+async function getLzo(){
+  if(!lzoModulePromise){
+    lzoModulePromise=import('https://cdn.jsdelivr.net/npm/lzo1x@1.0.1/+esm');
+  }
+  return await lzoModulePromise;
+}
+
+function crc8(buf){
+  const table=[
+    0x00,0x07,0x0e,0x09,0x1c,0x1b,0x12,0x15,0x38,0x3f,0x36,0x31,0x24,0x23,0x2a,0x2d,
+    0x70,0x77,0x7e,0x79,0x6c,0x6b,0x62,0x65,0x48,0x4f,0x46,0x41,0x54,0x53,0x5a,0x5d,
+    0xe0,0xe7,0xee,0xe9,0xfc,0xfb,0xf2,0xf5,0xd8,0xdf,0xd6,0xd1,0xc4,0xc3,0xca,0xcd,
+    0x90,0x97,0x9e,0x99,0x8c,0x8b,0x82,0x85,0xa8,0xaf,0xa6,0xa1,0xb4,0xb3,0xba,0xbd,
+    0xc7,0xc0,0xc9,0xce,0xdb,0xdc,0xd5,0xd2,0xff,0xf8,0xf1,0xf6,0xe3,0xe4,0xed,0xea,
+    0xb7,0xb0,0xb9,0xbe,0xab,0xac,0xa5,0xa2,0x8f,0x88,0x81,0x86,0x93,0x94,0x9d,0x9a,
+    0x27,0x20,0x29,0x2e,0x3b,0x3c,0x35,0x32,0x1f,0x18,0x11,0x16,0x03,0x04,0x0d,0x0a,
+    0x57,0x50,0x59,0x5e,0x4b,0x4c,0x45,0x42,0x6f,0x68,0x61,0x66,0x73,0x74,0x7d,0x7a,
+    0x89,0x8e,0x87,0x80,0x95,0x92,0x9b,0x9c,0xb1,0xb6,0xbf,0xb8,0xad,0xaa,0xa3,0xa4,
+    0xf9,0xfe,0xf7,0xf0,0xe5,0xe2,0xeb,0xec,0xc1,0xc6,0xcf,0xc8,0xdd,0xda,0xd3,0xd4,
+    0x69,0x6e,0x67,0x60,0x75,0x72,0x7b,0x7c,0x51,0x56,0x5f,0x58,0x4d,0x4a,0x43,0x44,
+    0x19,0x1e,0x17,0x10,0x05,0x02,0x0b,0x0c,0x21,0x26,0x2f,0x28,0x3d,0x3a,0x33,0x34,
+    0x4e,0x49,0x40,0x47,0x52,0x55,0x5c,0x5b,0x76,0x71,0x78,0x7f,0x6a,0x6d,0x64,0x63,
+    0x3e,0x39,0x30,0x37,0x22,0x25,0x2c,0x2b,0x06,0x01,0x08,0x0f,0x1a,0x1d,0x14,0x13,
+    0xae,0xa9,0xa0,0xa7,0xb2,0xb5,0xbc,0xbb,0x96,0x91,0x98,0x9f,0x8a,0x8d,0x84,0x83,
+    0xde,0xd9,0xd0,0xd7,0xc2,0xc5,0xcc,0xcb,0xe6,0xe1,0xe8,0xef,0xfa,0xfd,0xf4,0xf3
+  ];
+  let c=0;
+  for(const b of buf)c=table[(c^b)&255];
+  return c;
+}
+
+function x6Packet(command,payload){
+  const out=new Uint8Array(8+payload.length);
+  out[0]=0x51; out[1]=0x78; out[2]=command; out[3]=0x00;
+  out[4]=payload.length&255; out[5]=(payload.length>>8)&255;
+  out.set(payload,6);
+  out[6+payload.length]=crc8(payload);
+  out[7+payload.length]=0xff;
+  return out;
+}
+
+async function makeReceiptPixels(){
+  const W=384, H=504;
+  const c=document.createElement('canvas');
+  c.width=W; c.height=H;
+  const ctx=c.getContext('2d',{willReadFrequently:true});
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
+
+  // Large, dark timestamp.
+  ctx.fillStyle='#111';
+  ctx.font='bold 26px monospace';
+  ctx.textBaseline='top';
+  ctx.fillText(timeEl.textContent || stamp(),14,10);
+
+  // Keep the photo large while leaving a guaranteed logo area below it.
+  const photoW=300;
+  const photoH=350;
+  const photoX=Math.round((W-photoW)/2);
+  const photoY=48;
+  ctx.drawImage(photo,photoX,photoY,photoW,photoH);
+
+  // IMPORTANT: always reserve space for the original Frameo logo.
+  // Wait for the image to be decoded so Bluefy cannot print before it exists.
+  const logoImg=document.querySelector('.receipt-logo');
+  if(logoImg){
+    try{ if(!logoImg.complete || !logoImg.naturalWidth) await logoImg.decode(); }catch(e){}
+    if(logoImg.naturalWidth && logoImg.naturalHeight){
+      const maxW=300, maxH=86;
+      const scale=Math.min(maxW/logoImg.naturalWidth,maxH/logoImg.naturalHeight);
+      const logoW=Math.max(1,Math.round(logoImg.naturalWidth*scale));
+      const logoH=Math.max(1,Math.round(logoImg.naturalHeight*scale));
+      const lx=Math.round((W-logoW)/2);
+      const ly=photoY+photoH+5;
+      ctx.drawImage(logoImg,lx,ly,logoW,logoH);
+    }else{
+      // Fallback only if the asset itself cannot be loaded.
+      ctx.fillStyle='#111';
+      ctx.font='bold 54px Arial,sans-serif';
+      ctx.textAlign='center';
+      ctx.fillText('frameo.',W/2,photoY+photoH+4);
+      ctx.textAlign='left';
+    }
+  }
+
+  const rgba=ctx.getImageData(0,0,W,H).data;
+  const gray=new Float32Array(W*H);
+  for(let i=0,p=0;i<rgba.length;i+=4,p++){
+    gray[p]=0.299*rgba[i]+0.587*rgba[i+1]+0.114*rgba[i+2];
+  }
+  return gray;
+}
+function makeX6BitmapRows(gray){
+  const W=384;
+  const H=Math.floor(gray.length/W);
+  const work=new Float32Array(gray);
+  const rows=[];
+  // One dithering pass only. The old version dithered the photo and then
+  // dithered the whole receipt again, which washed out the photo.
+  for(let y=0;y<H;y++){
+    const reverse=(y&1)===1;
+    for(let xi=0;xi<W;xi++){
+      const x=reverse?(W-1-xi):xi;
+      const idx=y*W+x;
+      const oldv=work[idx];
+      const nv=oldv<128?0:255;
+      const err=oldv-nv;
+      work[idx]=nv;
+      const dir=reverse?-1:1;
+      if(x+dir>=0 && x+dir<W) work[idx+dir]+=err*7/16;
+      if(y+1<H){
+        if(x-dir>=0 && x-dir<W) work[idx+W-dir]+=err*3/16;
+        work[idx+W]+=err*5/16;
+        if(x+dir>=0 && x+dir<W) work[idx+W+dir]+=err/16;
+      }
+    }
+  }
+  for(let y=0;y<H;y++){
+    const row=new Uint8Array(48);
+    for(let x=0;x<W;x++) if(work[y*W+x]<128) row[x>>3]|=(1<<(x&7));
+    rows.push(row);
+  }
+  return rows;
+}
+function x6SetupPacket(command,payload){
+  return x6Packet(command,payload);
+}
+
+async function waitX6Ready(){
+  while(x6FlowBlocked){
+    await new Promise(r=>setTimeout(r,10));
+  }
+}
+
+async function sendX6Frame(frame){
+  // Bluefy/iPad can expose a small write-without-response size. Fragment the
+  // 56-byte logical X6 frame into safe 20-byte BLE writes; the printer's
+  // protocol frame remains intact at the BLE transport layer.
+  const CHUNK=20;
+  for(let i=0;i<frame.length;i+=CHUNK){
+    await waitX6Ready();
+    await x6WriteChar.writeValueWithoutResponse(frame.slice(i,i+CHUNK));
+    if(i+CHUNK<frame.length) await new Promise(r=>setTimeout(r,4));
+  }
+}
+
+async function printToX6(){
+  if(!x6Device || !x6Device.gatt || !x6Device.gatt.connected || !x6WriteChar){
+    throw new Error('Please connect X6 first.');
+  }
+
+  const gray=await makeReceiptPixels();
+  const rows=makeX6BitmapRows(gray);
+
+  // X6/X6h raw, uncompressed 1bpp protocol:
+  // speed -> energy -> apply -> one blank lead row -> one A2 frame per row -> feed.
+  // Density 5 is a balanced setting for photo detail and darkness.
+  const density=5;
+  const speed=8 + 4*(density-1);      // 24
+  const energy=12000 + 6000*(density-1); // 36000
+
+  await sendX6Frame(x6SetupPacket(0xBD,new Uint8Array([speed])));
+  await sendX6Frame(x6SetupPacket(0xAF,new Uint8Array([energy & 255,(energy>>8)&255])));
+  await sendX6Frame(x6SetupPacket(0xBE,new Uint8Array([0x01])));
+
+  // Required blank lead row: avoids artifacts at the beginning of a job.
+  await sendX6Frame(x6Packet(0xA2,new Uint8Array(48)));
+  await new Promise(r=>setTimeout(r,15));
+
+  for(const row of rows){
+    await waitX6Ready();
+    await sendX6Frame(x6Packet(0xA2,row));
+    await new Promise(r=>setTimeout(r,15));
+  }
+
+  // Feed 64 pixel rows, then allow the printer to settle before any disconnect.
+  await sendX6Frame(x6Packet(0xA1,new Uint8Array([64,0])));
+  await new Promise(r=>setTimeout(r,500));
+}
+
+document.getElementById('print').onclick=async()=>{
+  const btn=document.getElementById('print');
+  const old=btn.textContent;
+  btn.disabled=true;
+  btn.textContent='PRINTING…';
+  try{
+    await printToX6();
+    btn.textContent='PRINTED ✓';
+    setTimeout(()=>{btn.textContent=old;btn.disabled=false;},1800);
+  }catch(e){
+    console.error(e);
+    alert('X6 printing failed: '+(e.message || e));
+    btn.textContent=old;
+    btn.disabled=false;
+  }
+};
+
+// Hidden 5-tap settings lock (development PIN 2026)
+let taps=0,last=0;
+document.getElementById('lockDot').onclick=()=>{
+  const now=Date.now();
+  taps=(now-last<700)?taps+1:1; last=now;
+  if(taps>=5){
+    taps=0;
+    document.getElementById('pin').style.display='flex';
+    document.getElementById('pinInput').focus();
+  }
+};
+document.getElementById('pinClose').onclick=()=>document.getElementById('pin').style.display='none';
+
+window.addEventListener('beforeunload',e=>{ if(video.srcObject) video.srcObject.getTracks().forEach(t=>t.stop()); });
+</script>
+</body>
+</html>
